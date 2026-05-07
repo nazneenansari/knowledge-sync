@@ -1,0 +1,1539 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Webhook Event Handler API",
+    "description": "\n## Webhook Integration API\n\nBidirectional webhook event processing service that synchronises **knowledge\narticles**, **case data**, and **usage analytics** between eGain and\nSalesforce Service Cloud.\n\n---\n\n### Integration Flows\n\n| # | Endpoint | Body `event` | Direction | Downstream |\n|---|----------|--------------|-----------|------------|\n| 1 | `POST /webhooks/article-published` | `article.published` | eGain → Salesforce | Salesforce `Knowledge__kav` sObject |\n| 2 | `POST /webhooks/case-closed` | `case.closed` | Salesforce → eGain | Content Gap API |\n| 3 | `POST /webhooks/article-viewed` | `article.viewed` | eGain → eGain Analytics | Analytics API / Kafka |\n\n---\n\n### Authentication\n\nEvery inbound webhook **must** include two headers:\n\n| Header | Format |\n|--------|--------|\n| `X-Signature` | `sha256=<64-char hex digest>` |\n| `X-Timestamp` | Unix epoch seconds (±5 min tolerance) |\n\n**Signing algorithm**\n```\nsigning_payload = f\"{X-Timestamp}.{raw_request_body}\"\nsignature       = HMAC-SHA256(shared_secret, signing_payload)\nheader_value    = \"sha256=\" + signature.hex()\n```\n\n---\n\n",
+    "contact": {
+      "name": "Nazneen Ansari",
+      "email": "nazneen.ansari379@gmail.com"
+    },
+    "version": "1.0.0"
+  },
+  "servers": [
+    {
+      "url": "http://localhost:8000",
+      "description": "Local development"
+    },
+    {
+      "url": "https://integrations.egain.com/webhooks/v1",
+      "description": "Production"
+    }
+  ],
+  "paths": {
+    "/webhooks/article-published": {
+      "post": {
+        "tags": [
+          "Webhooks - Knowledge Articles"
+        ],
+        "summary": "Receive article-published event",
+        "description": "Called by the **eGain CMS** whenever a knowledge article is published or updated.\nThe service transforms the payload and enqueues a push to **Salesforce Knowledge**\n(`Knowledge__kav` sObject).\n\nRequest body must include `\"event\": \"article.published\"`, `tenantId` (eGain tenant),\nand `appId` (the application triggering the webhook).\n\n**Processing flow:**\n1. eGain publishes article → fires this webhook\n2. HMAC-SHA256 signature is verified\n3. System validates the request body\n4. Event is enqueued → `202 Accepted` returned immediately\n5. Worker transforms the article and calls Salesforce Knowledge API",
+        "operationId": "receive_article_published_webhooks_article_published_post",
+        "parameters": [
+          {
+            "name": "X-Signature",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "sha256=<hex-digest> of `{timestamp}.{raw_body}`",
+              "examples": [
+                "sha256=4b1f3c8a9e2d7f0b6a3e5c8d1f4a7b2e9c6d0a3f7e1b4c8d2f5a9e0b3c6d1f4"
+              ],
+              "title": "X-Signature"
+            },
+            "description": "sha256=<hex-digest> of `{timestamp}.{raw_body}`"
+          },
+          {
+            "name": "X-Timestamp",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "Unix epoch seconds at time of signing.",
+              "examples": [
+                "1717243200"
+              ],
+              "title": "X-Timestamp"
+            },
+            "description": "Unix epoch seconds at time of signing."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ArticlePublishedWebhook"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Event accepted and queued",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AcceptedResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid HMAC signature",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnauthorizedError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden – tenant not authorised for this operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ForbiddenError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InternalServerError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/webhooks/case-closed": {
+      "post": {
+        "tags": [
+          "Webhooks - Cases"
+        ],
+        "summary": "Receive case-closed event",
+        "description": "Called by **Salesforce** (Outbound Message or Platform Event) when a support case\nis closed. The service analyses whether the case was resolved with existing\nknowledge articles, computes a **content-gap**, and records a gap entry\nin eGain.\n\nRequest body must include `\"event\": \"case.closed\"`, `tenantId` (eGain tenant),\nand `appId` (the application triggering the webhook).\n\n**Processing flow:**\n1. Salesforce closes case → fires this webhook\n2. HMAC-SHA256 signature verified\n3. Event enqueued → `202 Accepted` returned\n4. Worker takes the data and stores it in a database for scheduled batch processing for content-gap analysis.",
+        "operationId": "receive_case_closed_webhooks_case_closed_post",
+        "parameters": [
+          {
+            "name": "X-Signature",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "sha256=<hex-digest> of `{timestamp}.{raw_body}`",
+              "examples": [
+                "sha256=4b1f3c8a9e2d7f0b6a3e5c8d1f4a7b2e9c6d0a3f7e1b4c8d2f5a9e0b3c6d1f4"
+              ],
+              "title": "X-Signature"
+            },
+            "description": "sha256=<hex-digest> of `{timestamp}.{raw_body}`"
+          },
+          {
+            "name": "X-Timestamp",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "Unix epoch seconds at time of signing.",
+              "examples": [
+                "1717243200"
+              ],
+              "title": "X-Timestamp"
+            },
+            "description": "Unix epoch seconds at time of signing."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CaseClosedWebhook"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Event accepted and queued",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AcceptedResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid HMAC signature",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnauthorizedError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden – tenant not authorised for this operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ForbiddenError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InternalServerError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/webhooks/article-viewed": {
+      "post": {
+        "tags": [
+          "Webhooks - Analytics"
+        ],
+        "summary": "Receive article-viewed analytics event",
+        "description": "Called by the **eGain portal** on every article page view. Events are streamed\nto the **eGain Analytics API** (or Kafka/Kinesis in high-volume deployments).\n\nRequest body must include `\"event\": \"article.viewed\"`, `tenantId` (eGain tenant),\nand `appId` (the application triggering the webhook).\n\nThis is a **high-throughput** endpoint — expect bursts of hundreds of events\nper second during peak support hours.\n\n**Processing flow:**\n1. eGain fires view event in real time\n2. Signature verified, body validated\n3. Event enqueued → `202 Accepted` returned\n4. Worker batches and forwards to `POST /api/v1/analytics/events`\n5. Analytics pipeline updates article usage metrics in eGain",
+        "operationId": "receive_article_viewed_webhooks_article_viewed_post",
+        "parameters": [
+          {
+            "name": "X-Signature",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "sha256=<hex-digest> of `{timestamp}.{raw_body}`",
+              "examples": [
+                "sha256=4b1f3c8a9e2d7f0b6a3e5c8d1f4a7b2e9c6d0a3f7e1b4c8d2f5a9e0b3c6d1f4"
+              ],
+              "title": "X-Signature"
+            },
+            "description": "sha256=<hex-digest> of `{timestamp}.{raw_body}`"
+          },
+          {
+            "name": "X-Timestamp",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "Unix epoch seconds at time of signing.",
+              "examples": [
+                "1717243200"
+              ],
+              "title": "X-Timestamp"
+            },
+            "description": "Unix epoch seconds at time of signing."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ArticleViewedWebhook"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Analytics event accepted and queued",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AcceptedResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid HMAC signature",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnauthorizedError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden – tenant not authorised for this operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ForbiddenError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InternalServerError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/dlq": {
+      "get": {
+        "tags": [
+          "Admin - DLQ"
+        ],
+        "summary": "List all events in the Dead Letter Queue",
+        "description": "Returns a paginated list of events that exhausted all retry attempts.\nUse `POST /admin/dlq/{event_id}/replay` to re-enqueue any entry.",
+        "operationId": "list_dlq_admin_dlq_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DLQListResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid authentication credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnauthorizedError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden – insufficient permissions to access the DLQ",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ForbiddenError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InternalServerError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/dlq/{event_id}/replay": {
+      "post": {
+        "tags": [
+          "Admin - DLQ"
+        ],
+        "summary": "Replay a dead-letter event",
+        "description": "Re-enqueues a DLQ event for reprocessing. The original DLQ entry is removed\nand a **new event** (new UUID) is created. The new event's `meta` includes\n`replayed_from` and `replayed_at` for traceability.",
+        "operationId": "replay_dlq_event_admin_dlq__event_id__replay_post",
+        "parameters": [
+          {
+            "name": "event_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Event Id"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReplayResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid authentication credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnauthorizedError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden – insufficient permissions to replay DLQ events",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ForbiddenError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Event not found in DLQ",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InternalServerError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/health": {
+      "get": {
+        "tags": [
+          "Observability"
+        ],
+        "summary": "Service health check and queue metrics",
+        "operationId": "health_check_health_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid authentication credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnauthorizedError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden – insufficient permissions to view health metrics",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ForbiddenError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InternalServerError"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "AcceptedResponse": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "title": "Status",
+            "default": "accepted",
+            "examples": [
+              "accepted"
+            ]
+          },
+          "eventId": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Eventid",
+            "description": "Assigned UUID for status polling.",
+            "examples": [
+              "3fa85f64-5717-4562-b3fc-2c963f66afa6"
+            ]
+          },
+          "message": {
+            "type": "string",
+            "title": "Message",
+            "examples": [
+              "Article publish event queued for processing."
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "eventId",
+          "message"
+        ],
+        "title": "AcceptedResponse",
+        "description": "Returned immediately (HTTP 202) for every inbound webhook."
+      },
+      "ArticleData": {
+        "properties": {
+          "articleId": {
+            "type": "string",
+            "title": "Articleid",
+            "description": "Unique article identifier in eGain.",
+            "examples": [
+              "ARTICLE-1001"
+            ]
+          },
+          "title": {
+            "type": "string",
+            "maxLength": 255,
+            "title": "Title",
+            "description": "Article title — maps to Salesforce Knowledge `Title` field.",
+            "examples": [
+              "How to reset your password"
+            ]
+          },
+          "content": {
+            "type": "string",
+            "title": "Content",
+            "description": "Full HTML article body. Maps to Salesforce `ArticleBody`.",
+            "examples": [
+              "<p>Step 1: Click <b>Forgot Password</b>...</p>"
+            ]
+          },
+          "language": {
+            "type": "string",
+            "title": "Language",
+            "description": "BCP-47 language tag. Maps to Salesforce `Language`.",
+            "default": "en-US",
+            "examples": [
+              "en-US",
+              "fr-FR",
+              "de-DE"
+            ]
+          },
+          "version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Version",
+            "description": "Article version string stored in custom field `eGain__Source_Article_Version__c`.",
+            "examples": [
+              "2.0"
+            ]
+          },
+          "categories": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Categories",
+            "description": "eGain category names. Joined with ';' into Salesforce `eGain__Categories__c`.",
+            "examples": [
+              [
+                "Account Management",
+                "Security"
+              ]
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "articleId",
+          "title",
+          "urlName",
+          "content"
+        ],
+        "title": "ArticleData",
+        "description": "Knowledge article payload from eGain CMS."
+      },
+      "ArticlePublishedWebhook": {
+        "properties": {
+          "webhookId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Webhookid",
+            "description": "Unique delivery ID assigned by eGain. Use for idempotency checks.",
+            "examples": [
+              "wh_01HZK8M3N2PQRS"
+            ]
+          },
+          "event": {
+            "type": "string",
+            "title": "Event",
+            "description": "Must be exactly `article.published`.",
+            "examples": [
+              "article.published"
+            ]
+          },
+          "tenantId": {
+            "type": "string",
+            "title": "Tenantid",
+            "description": "eGain tenant identifier. Required for all webhook calls.",
+            "examples": [
+              "acme-corp"
+            ]
+          },
+          "appId": {
+            "type": "string",
+            "title": "Appid",
+            "description": "Identifier of the application triggering this webhook.",
+            "examples": [
+              "egain"
+            ]
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Timestamp",
+            "description": "ISO-8601 event time in UTC.",
+            "examples": [
+              "2024-06-01T12:00:00Z"
+            ]
+          },
+          "data": {
+            "$ref": "#/components/schemas/ArticleData"
+          }
+        },
+        "type": "object",
+        "required": [
+          "event",
+          "tenantId",
+          "appId",
+          "timestamp",
+          "data"
+        ],
+        "title": "ArticlePublishedWebhook",
+        "description": "Webhook envelope sent by eGain when a knowledge article is published or updated.\nTriggers a push to **Salesforce Knowledge** (`Knowledge__kav` sObject)."
+      },
+      "ArticleViewData": {
+        "properties": {
+          "articleId": {
+            "type": "string",
+            "title": "Articleid",
+            "description": "eGain article identifier.",
+            "examples": [
+              "ARTICLE-1001"
+            ]
+          },
+          "articleVersion": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Articleversion",
+            "description": "Version of the article viewed. Null if version tracking is off.",
+            "examples": [
+              "2.0"
+            ]
+          },
+          "sessionId": {
+            "type": "string",
+            "title": "Sessionid",
+            "description": "Browser / portal session identifier.",
+            "examples": [
+              "sess_abc123def456"
+            ]
+          },
+          "userId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Userid",
+            "description": "Authenticated user ID. Null for anonymous (self-service) views.",
+            "examples": [
+              "usr_xyz789"
+            ]
+          },
+          "channel": {
+            "$ref": "#/components/schemas/Channel",
+            "description": "Surface where the article was viewed.",
+            "default": "web",
+            "examples": [
+              "web"
+            ]
+          },
+          "durationSeconds": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Durationseconds",
+            "description": "Time in seconds the user spent on the article page.",
+            "examples": [
+              45
+            ]
+          },
+          "helpful": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Helpful",
+            "description": "User's helpfulness rating. `true` = helpful, `false` = not helpful, `null` = not yet rated.",
+            "examples": [
+              true
+            ]
+          },
+          "searchQuery": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Searchquery",
+            "description": "Search term that led the user to this article, if any.",
+            "examples": [
+              "reset password"
+            ]
+          },
+          "caseId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Caseid",
+            "description": "Salesforce Case ID if the article was viewed in a case context.",
+            "examples": [
+              "5003000000ABC123AAA"
+            ]
+          },
+          "userAgent": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Useragent",
+            "description": "Browser user-agent string.",
+            "examples": [
+              "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)"
+            ]
+          },
+          "locale": {
+            "type": "string",
+            "title": "Locale",
+            "description": "User locale (BCP-47).",
+            "default": "en-US",
+            "examples": [
+              "en-US"
+            ]
+          },
+          "deviceType": {
+            "$ref": "#/components/schemas/DeviceType",
+            "description": "Device category derived from user-agent.",
+            "default": "unknown",
+            "examples": [
+              "desktop"
+            ]
+          },
+          "timestamp": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Timestamp",
+            "description": "Client-side event time. Falls back to server receipt time if absent.",
+            "examples": [
+              "2024-06-01T17:00:00Z"
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "articleId",
+          "sessionId"
+        ],
+        "title": "ArticleViewData",
+        "description": "Article view analytics event from the eGain portal."
+      },
+      "ArticleViewedWebhook": {
+        "properties": {
+          "webhookId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Webhookid",
+            "examples": [
+              "wh_03HZK0N5O4RSTU"
+            ]
+          },
+          "event": {
+            "type": "string",
+            "title": "Event",
+            "description": "Must be exactly `article.viewed`.",
+            "examples": [
+              "article.viewed"
+            ]
+          },
+          "tenantId": {
+            "type": "string",
+            "title": "Tenantid",
+            "description": "eGain tenant identifier. Required for all webhook calls.",
+            "examples": [
+              "acme-corp"
+            ]
+          },
+          "appId": {
+            "type": "string",
+            "title": "Appid",
+            "description": "Identifier of the application triggering this webhook.",
+            "examples": [
+              "egain-portal-v2"
+            ]
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Timestamp",
+            "examples": [
+              "2024-06-01T17:00:00Z"
+            ]
+          },
+          "data": {
+            "$ref": "#/components/schemas/ArticleViewData"
+          }
+        },
+        "type": "object",
+        "required": [
+          "event",
+          "tenantId",
+          "appId",
+          "timestamp",
+          "data"
+        ],
+        "title": "ArticleViewedWebhook",
+        "description": "Webhook envelope sent by eGain on every article page view.\nHigh-throughput endpoint — expect bursts of hundreds of events per second.\nEvents are streamed to the eGain Analytics API (or Kafka/Kinesis in production)."
+      },
+      "CaseClosedWebhook": {
+        "properties": {
+          "event": {
+            "type": "string",
+            "title": "Event",
+            "description": "Must be exactly `case.closed`.",
+            "examples": [
+              "case.closed"
+            ]
+          },
+          "tenantId": {
+            "type": "string",
+            "title": "Tenantid",
+            "description": "eGain tenant identifier. Required for all webhook calls.",
+            "examples": [
+              "acme-corp"
+            ]
+          },
+          "appId": {
+            "type": "string",
+            "title": "Appid",
+            "description": "Identifier of the application triggering this webhook.",
+            "examples": [
+              "salesforce-service-cloud"
+            ]
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Timestamp",
+            "description": "ISO-8601 event time in UTC.",
+            "examples": [
+              "2024-06-01T15:00:00Z"
+            ]
+          },
+          "data": {
+            "$ref": "#/components/schemas/CaseData"
+          }
+        },
+        "type": "object",
+        "required": [
+          "event",
+          "tenantId",
+          "appId",
+          "timestamp",
+          "data"
+        ],
+        "title": "CaseClosedWebhook",
+        "description": "Webhook envelope from Salesforce (Outbound Message or Platform Event)\nwhen a support case is closed. Triggers content-gap analysis in eGain."
+      },
+      "CaseData": {
+        "properties": {
+          "caseId": {
+            "type": "string",
+            "title": "Caseid",
+            "description": "Salesforce Case record ID (15 or 18-char Salesforce ID).",
+            "examples": [
+              "5003000000ABC123AAA"
+            ]
+          },
+          "caseNumber": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Casenumber",
+            "description": "Human-readable case number shown in Salesforce UI.",
+            "examples": [
+              "00001234"
+            ]
+          },
+          "subject": {
+            "type": "string",
+            "maxLength": 255,
+            "title": "Subject",
+            "description": "Case subject line.",
+            "examples": [
+              "Cannot log into portal"
+            ]
+          },
+          "description": {
+            "type": "string",
+            "title": "Description",
+            "description": "Full case description / customer problem statement.",
+            "examples": [
+              "User says password reset email not arriving."
+            ]
+          },
+          "resolution": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resolution",
+            "description": "Agent resolution notes. Null = no resolution recorded.",
+            "examples": [
+              "Sent user the password reset knowledge article."
+            ]
+          },
+          "category": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Category",
+            "description": "Salesforce case category / record type.",
+            "default": "Uncategorised",
+            "examples": [
+              "Account Management"
+            ]
+          },
+          "priority": {
+            "$ref": "#/components/schemas/Priority",
+            "description": "Salesforce case priority.",
+            "default": "Medium",
+            "examples": [
+              "Medium"
+            ]
+          },
+          "articleIds": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Articleids",
+            "description": "eGain article IDs **suggested** to the agent during the case.",
+            "examples": [
+              [
+                "ARTICLE-1001",
+                "ARTICLE-1005"
+              ]
+            ]
+          },
+          "viewedArticleIds": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Viewedarticleids",
+            "description": "eGain article IDs the agent actually **opened/read**.",
+            "examples": [
+              [
+                "ARTICLE-1001"
+              ]
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "caseId",
+          "subject",
+          "description"
+        ],
+        "title": "CaseData",
+        "description": "Salesforce case payload delivered on case closure."
+      },
+      "Channel": {
+        "type": "string",
+        "enum": [
+          "web",
+          "portal",
+          "mobile",
+          "chat",
+          "email"
+        ],
+        "title": "Channel"
+      },
+      "DLQListResponse": {
+        "properties": {
+          "total": {
+            "type": "integer",
+            "title": "Total",
+            "examples": [
+              3
+            ]
+          },
+          "page": {
+            "type": "integer",
+            "title": "Page",
+            "examples": [
+              1
+            ]
+          },
+          "limit": {
+            "type": "integer",
+            "title": "Limit",
+            "examples": [
+              20
+            ]
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/EventStatusResponse"
+            },
+            "type": "array",
+            "title": "Items"
+          }
+        },
+        "type": "object",
+        "required": [
+          "total",
+          "page",
+          "limit",
+          "items"
+        ],
+        "title": "DLQListResponse",
+        "description": "Paginated list of dead-letter queue events."
+      },
+      "DeviceType": {
+        "type": "string",
+        "enum": [
+          "desktop",
+          "mobile",
+          "tablet",
+          "unknown"
+        ],
+        "title": "DeviceType"
+      },
+      "ErrorResponse": {
+        "properties": {
+          "error": {
+            "type": "string",
+            "title": "Error",
+            "description": "Machine-readable error code.",
+            "examples": [
+              "INVALID_PAYLOAD"
+            ]
+          },
+          "message": {
+            "type": "string",
+            "title": "Message",
+            "description": "Human-readable error description.",
+            "examples": [
+              "Payload must include data.articleId."
+            ]
+          },
+          "details": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Details",
+            "description": "Optional list of field-level validation errors.",
+            "examples": [
+              [
+                "data.articleId: field required",
+                "data.urlName: field required"
+              ]
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "error",
+          "message"
+        ],
+        "title": "ErrorResponse",
+        "description": "Standard error envelope returned on 4xx responses where the body does not have a dedicated schema."
+      },
+      "UnauthorizedError": {
+        "properties": {
+          "error": {
+            "type": "string",
+            "title": "Error",
+            "description": "Machine-readable error code. Always `UNAUTHORIZED` for 401 responses.",
+            "examples": [
+              "UNAUTHORIZED"
+            ]
+          },
+          "message": {
+            "type": "string",
+            "title": "Message",
+            "description": "Human-readable description of the authentication failure.",
+            "examples": [
+              "Missing or invalid HMAC signature.",
+              "X-Timestamp header is absent or outside the ±5 min tolerance.",
+              "X-Signature header is missing."
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "error",
+          "message"
+        ],
+        "title": "UnauthorizedError",
+        "description": "Returned on HTTP 401 when authentication credentials are missing or the HMAC signature cannot be verified."
+      },
+      "ForbiddenError": {
+        "properties": {
+          "error": {
+            "type": "string",
+            "title": "Error",
+            "description": "Machine-readable error code. Always `FORBIDDEN` for 403 responses.",
+            "examples": [
+              "FORBIDDEN"
+            ]
+          },
+          "message": {
+            "type": "string",
+            "title": "Message",
+            "description": "Human-readable description of why the request was denied.",
+            "examples": [
+              "Tenant acme-corp is not authorised to publish articles.",
+              "appId egain-cms-v3 does not have permission to call this endpoint.",
+              "Insufficient permissions to access the Dead Letter Queue."
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "error",
+          "message"
+        ],
+        "title": "ForbiddenError",
+        "description": "Returned on HTTP 403 when the caller is authenticated but not permitted to perform the requested operation."
+      },
+      "InternalServerError": {
+        "properties": {
+          "error": {
+            "type": "string",
+            "title": "Error",
+            "description": "Machine-readable error code. Always `INTERNAL_SERVER_ERROR` for 500 responses.",
+            "examples": [
+              "INTERNAL_SERVER_ERROR"
+            ]
+          },
+          "message": {
+            "type": "string",
+            "title": "Message",
+            "description": "Human-readable description of the server-side failure.",
+            "examples": [
+              "An unexpected error occurred. Please try again later.",
+              "Queue service is temporarily unavailable.",
+              "Failed to persist event to the database."
+            ]
+          },
+          "details": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Details",
+            "description": "Optional diagnostic detail. Omitted in production to avoid leaking internal state.",
+            "examples": [
+              null
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "error",
+          "message"
+        ],
+        "title": "InternalServerError",
+        "description": "Returned on HTTP 500 when an unexpected server-side error prevents the request from completing."
+      },
+      "EventStatus": {
+        "type": "string",
+        "enum": [
+          "pending",
+          "processing",
+          "completed",
+          "retrying",
+          "dead"
+        ],
+        "title": "EventStatus"
+      },
+      "EventStatusResponse": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id",
+            "examples": [
+              "3fa85f64-5717-4562-b3fc-2c963f66afa6"
+            ]
+          },
+          "type": {
+            "$ref": "#/components/schemas/EventType"
+          },
+          "status": {
+            "$ref": "#/components/schemas/EventStatus"
+          },
+          "attempts": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Attempts",
+            "examples": [
+              1
+            ]
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Createdat"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updatedat"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error",
+            "examples": [
+              "Salesforce API returned 503"
+            ]
+          },
+          "dlqReason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dlqreason",
+            "examples": [
+              "Max retry attempts (3) exceeded"
+            ]
+          },
+          "dlqAt": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dlqat"
+          },
+          "meta": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Meta",
+            "description": "Source metadata attached at enqueue time."
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "type",
+          "status",
+          "attempts",
+          "createdAt",
+          "updatedAt"
+        ],
+        "title": "EventStatusResponse",
+        "description": "Full status record for a queued or completed event."
+      },
+      "EventType": {
+        "type": "string",
+        "enum": [
+          "egain.article.published",
+          "salesforce.case.closed",
+          "egain.article.viewed"
+        ],
+        "title": "EventType"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "HealthResponse": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "title": "Status",
+            "default": "ok",
+            "examples": [
+              "ok"
+            ]
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Timestamp"
+          }
+        },
+        "type": "object",
+        "required": [
+          "timestamp",
+          "uptimeSeconds",
+          "queue"
+        ],
+        "title": "HealthResponse"
+      },
+      "Priority": {
+        "type": "string",
+        "enum": [
+          "Low",
+          "Medium",
+          "High",
+          "Critical"
+        ],
+        "title": "Priority"
+      },
+      "ReplayResponse": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "title": "Status",
+            "default": "accepted",
+            "examples": [
+              "accepted"
+            ]
+          },
+          "replayedEventId": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Replayedeventid",
+            "description": "The original DLQ event ID that was replayed.",
+            "examples": [
+              "3fa85f64-5717-4562-b3fc-2c963f66afa6"
+            ]
+          },
+          "newEventId": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Neweventid",
+            "description": "Newly assigned event ID for the re-enqueued event.",
+            "examples": [
+              "7cb96a18-1234-4abc-9def-aabbccddeeff"
+            ]
+          },
+          "message": {
+            "type": "string",
+            "title": "Message",
+            "examples": [
+              "Event re-enqueued for reprocessing."
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "replayedEventId",
+          "newEventId",
+          "message"
+        ],
+        "title": "ReplayResponse",
+        "description": "Returned when a DLQ event is successfully re-enqueued."
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
+      }
+    }
+  },
+  "tags": [
+    {
+      "name": "Webhooks - Knowledge Articles",
+      "description": "Push eGain knowledge articles to Salesforce Knowledge."
+    },
+    {
+      "name": "Webhooks - Cases",
+      "description": "Pull Salesforce closed cases for content-gap analysis in eGain."
+    },
+    {
+      "name": "Webhooks - Analytics",
+      "description": "Stream article-view analytics events back to eGain."
+    },
+    {
+      "name": "Admin - DLQ",
+      "description": "Inspect and replay events in the Dead Letter Queue."
+    },
+    {
+      "name": "Observability",
+      "description": "Health check and real-time queue metrics."
+    }
+  ]
+}
