@@ -304,6 +304,17 @@
         "summary": "List all events in the Dead Letter Queue",
         "description": "Returns a paginated list of events that exhausted all retry attempts.\nUse `POST /admin/dlq/{event_id}/replay` to re-enqueue any entry.",
         "operationId": "list_dlq_admin_dlq_get",
+        "parameters": [
+          {
+            "name": "event",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/EventType"
+            },
+            "description": "Filter results to a specific event type."
+          }
+        ],
         "responses": {
           "200": {
             "description": "Successful Response",
@@ -1079,20 +1090,6 @@
               3
             ]
           },
-          "page": {
-            "type": "integer",
-            "title": "Page",
-            "examples": [
-              1
-            ]
-          },
-          "limit": {
-            "type": "integer",
-            "title": "Limit",
-            "examples": [
-              20
-            ]
-          },
           "items": {
             "items": {
               "$ref": "#/components/schemas/EventStatusResponse"
@@ -1104,8 +1101,6 @@
         "type": "object",
         "required": [
           "total",
-          "page",
-          "limit",
           "items"
         ],
         "title": "DLQListResponse",
@@ -1287,19 +1282,24 @@
       },
       "EventStatusResponse": {
         "properties": {
-          "id": {
+          "eventId": {
             "type": "string",
             "format": "uuid",
-            "title": "Id",
+            "title": "Eventid",
             "examples": [
               "3fa85f64-5717-4562-b3fc-2c963f66afa6"
             ]
           },
-          "type": {
+          "event": {
             "$ref": "#/components/schemas/EventType"
           },
-          "status": {
-            "$ref": "#/components/schemas/EventStatus"
+          "statusCode": {
+            "type": "integer",
+            "title": "Statuscode",
+            "description": "HTTP status code returned by the downstream service on the last attempt.",
+            "examples": [
+              503
+            ]
           },
           "attempts": {
             "type": "integer",
@@ -1360,17 +1360,22 @@
             "title": "Dlqat"
           },
           "meta": {
-            "additionalProperties": true,
             "type": "object",
             "title": "Meta",
-            "description": "Source metadata attached at enqueue time."
+            "description": "Source metadata attached at enqueue time (e.g. tenantId, appId).",
+            "examples": [
+              {
+                "tenantId": "acme-corp",
+                "appId": "egain"
+              }
+            ]
           }
         },
         "type": "object",
         "required": [
-          "id",
-          "type",
-          "status",
+          "eventId",
+          "event",
+          "statusCode",
           "attempts",
           "createdAt",
           "updatedAt"

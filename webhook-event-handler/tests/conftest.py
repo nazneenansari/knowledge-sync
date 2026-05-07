@@ -5,6 +5,7 @@ import os
 # storage.py / queuing.py create boto3 clients at module level, which require a region.
 os.environ.setdefault("BUCKET_NAME", "test-bucket")
 os.environ.setdefault("QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/123456789/test-queue")
+os.environ.setdefault("DLQ_URL",   "https://sqs.us-east-1.amazonaws.com/123456789/test-dlq")
 os.environ.setdefault("AWS_DEFAULT_REGION", "us-east-1")
 os.environ.setdefault("AWS_ACCESS_KEY_ID", "test-key-id")
 os.environ.setdefault("AWS_SECRET_ACCESS_KEY", "test-secret-key")

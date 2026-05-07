@@ -411,9 +411,9 @@ class AcceptedResponse(BaseModel):
 class EventStatusResponse(BaseModel):
     """Full status record for a queued or completed event."""
 
-    id: UUID = Field(..., examples=["3fa85f64-5717-4562-b3fc-2c963f66afa6"])
-    type: EventType
-    status: EventStatus
+    event_id: UUID = Field(..., examples=["3fa85f64-5717-4562-b3fc-2c963f66afa6"])
+    event: EventType
+    status_code: int
     attempts: int = Field(..., ge=0, examples=[1])
     created_at: datetime = Field(..., alias="createdAt")
     updated_at: datetime = Field(..., alias="updatedAt")
@@ -436,8 +436,6 @@ class DLQListResponse(BaseModel):
     """Paginated list of dead-letter queue events."""
 
     total: int = Field(..., examples=[3])
-    page: int = Field(..., examples=[1])
-    limit: int = Field(..., examples=[20])
     items: list[EventStatusResponse]
 
 

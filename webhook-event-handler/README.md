@@ -14,7 +14,13 @@ eGain CMS / Salesforce / eGain Portal
                                │
                                ├── Secrets Manager  (fetch per-app HMAC secret)
                                ├── S3               (store raw payload)
-                               └── SQS              (enqueue processing message)
+                               └── SQS Main Queue   (enqueue processing message)
+                                         │
+                                         │  (on max retries exhausted)
+                                         ▼
+                                   SQS Dead Letter Queue
+                                         │
+                               Admin API (list / replay)
 ```
 
 ### Module layout
@@ -28,6 +34,8 @@ eGain CMS / Salesforce / eGain Portal
 | `middleware/secret_manager.py` | Per-app HMAC secret lookup from AWS Secrets Manager |
 | `middleware/storage.py` | Writes raw payload to S3 (conditional write, no overwrites) |
 | `middleware/queuing.py` | Publishes a lightweight reference message to SQS |
+| `dlq/routes.py` | Admin endpoints to list and replay Dead Letter Queue events |
+| `dlq/service.py` | SQS DLQ operations: peek messages and replay by event ID |
 
 ---
 
@@ -70,7 +78,8 @@ pip install -r requirements.txt
 | Variable | Description |
 |---|---|
 | `BUCKET_NAME` | S3 bucket name for raw webhook storage |
-| `QUEUE_URL` | Full SQS queue URL (e.g. `https://sqs.us-east-1.amazonaws.com/123456789/my-queue`) |
+| `QUEUE_URL` | Full SQS main queue URL (e.g. `https://sqs.us-east-1.amazonaws.com/123456789/my-queue`) |
+| `DLQ_URL` | Full SQS Dead Letter Queue URL (e.g. `https://sqs.us-east-1.amazonaws.com/123456789/my-queue-dlq`) |
 
 The Secrets Manager secret name is hardcoded as `event-producer-secret`.
 
@@ -78,10 +87,12 @@ The Secrets Manager secret name is hardcoded as `event-producer-secret`.
 # macOS / Linux
 export BUCKET_NAME="my-webhooks-bucket"
 export QUEUE_URL="https://sqs.us-east-1.amazonaws.com/123456789/my-queue"
+export DLQ_URL="https://sqs.us-east-1.amazonaws.com/123456789/my-queue-dlq"
 
 # Windows (PowerShell)
 $env:BUCKET_NAME = "my-webhooks-bucket"
 $env:QUEUE_URL   = "https://sqs.us-east-1.amazonaws.com/123456789/my-queue"
+$env:DLQ_URL     = "https://sqs.us-east-1.amazonaws.com/123456789/my-queue-dlq"
 ```
 
 ### Step 5 — Create the Secrets Manager secret
@@ -140,7 +151,7 @@ aws lambda update-function-code \
 ```bash
 aws lambda update-function-configuration \
   --function-name webhook-event-handler \
-  --environment "Variables={BUCKET_NAME=...,QUEUE_URL=...}"
+  --environment "Variables={BUCKET_NAME=...,QUEUE_URL=...,DLQ_URL=...}"
 ```
 
 4. Attach the Lambda to an API Gateway.
@@ -173,12 +184,14 @@ pytest tests/ -v
 
 ```bash
 pytest tests/test_endpoints.py -v
+pytest tests/test_dlq.py -v
 ```
 
 ### Run tests matching a keyword
 
 ```bash
 pytest tests/ -k "duplicate or signature" -v
+pytest tests/ -k "dlq or replay" -v
 ```
 
 No AWS credentials or live infrastructure are needed — all AWS calls are mocked.
@@ -214,6 +227,8 @@ Open `htmlcov/index.html` in a browser after the run.
 | `POST` | `/dev/webhooks/article-published` | eGain CMS | Publish/update knowledge article to Salesforce Knowledge |
 | `POST` | `/dev/webhooks/case-closed` | Salesforce | Analyse case for content gaps against existing articles |
 | `POST` | `/dev/webhooks/article-viewed` | eGain Portal | Stream article view analytics events |
+| `GET` | `/dev/admin/dlq` | Admin | List events currently in the Dead Letter Queue |
+| `POST` | `/dev/admin/dlq/{event_id}/replay` | Admin | Re-enqueue a DLQ event for reprocessing |
 
 ---
 
@@ -364,6 +379,75 @@ Requests with a timestamp older or newer than **300 seconds** are rejected with 
   "message":  "Article viewed event accepted for processing"
 }
 ```
+
+---
+
+### GET `/dev/admin/dlq`
+
+**Purpose**: Peek at events currently sitting in the Dead Letter Queue.  
+Messages are not consumed — visibility is reset immediately so they remain in the DLQ.
+
+#### Query parameters
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `event` | `EventType` enum | _(none)_ | Optional filter. One of `egain.article.published`, `salesforce.case.closed`, `egain.article.viewed`. Omit to return all event types. |
+
+#### Response (200)
+
+```json
+{
+  "total": 3,
+  "items": [
+    {
+      "event_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+      "event": "egain.article.published",
+      "status_code": 500,
+      "attempts": 3,
+      "createdAt": "2024-06-01T12:00:00Z",
+      "updatedAt": "2024-06-01T12:05:00Z",
+      "error": "Salesforce API returned 503",
+      "dlqReason": "Max retry attempts exceeded",
+      "dlqAt": "2024-06-01T12:05:00Z",
+      "meta": { "tenantId": "acme-corp", "appId": "egain" }
+    }
+  ]
+}
+```
+
+> **Note**: SQS surfaces at most 10 messages per call (its batch ceiling). The `total` field reflects the approximate queue depth from `ApproximateNumberOfMessages`.
+
+---
+
+### POST `/dev/admin/dlq/{event_id}/replay`
+
+**Purpose**: Re-enqueue a specific DLQ event for reprocessing.  
+The original DLQ entry is deleted and a new event with a fresh UUID is sent to the main SQS queue. The new message's `meta` includes `replayed_from` (original event ID) and `replayed_at` (ISO-8601 timestamp) for traceability.
+
+#### Path parameter
+
+| Parameter | Type | Description |
+|---|---|---|
+| `event_id` | UUID | The `event_id` from the DLQ list response |
+
+#### Response (202)
+
+```json
+{
+  "status": "accepted",
+  "replayedEventId": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+  "newEventId": "7cb96a18-1234-4abc-9def-aabbccddeeff",
+  "message": "Event re-enqueued for reprocessing."
+}
+```
+
+#### Error responses
+
+| Status | Condition |
+|---|---|
+| `404 Not Found` | No event with that ID exists in the DLQ |
+| `422 Unprocessable Entity` | `event_id` path parameter is not a valid UUID |
+| `500 Internal Server Error` | SQS call failed |
 
 ---
 
