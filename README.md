@@ -9,24 +9,8 @@ The `openapi.json` at the repository root is the machine-readable spec for the *
 
 ### View in Swagger UI (browser)
 
-1. Go to [swagger.io/tools/swagger-ui](https://swagger.io/tools/swagger-ui/) → **"Try it out"**, or open a local instance.
-2. In the **"Explore"** box, paste the raw URL of `openapi.json`.
-3. Click **Explore** — the UI renders all endpoints, request schemas, and example responses interactively.
-
-### View locally while the server is running
-
-```bash
-cd webhook-event-handler
-uvicorn main:app --reload
-```
-
-Then open:
-
-| URL | What you get |
-|---|---|
-| `http://localhost:8000/docs` | Swagger UI (interactive — try requests live) |
-| `http://localhost:8000/redoc` | ReDoc (read-only, cleaner layout) |
-| `http://localhost:8000/openapi.json` | Raw JSON spec |
+1. Go to [editor.swagger.io](https://editor.swagger.io).
+2. Paste the contents of `openapi.json` into the editor — the right pane renders all endpoints, request schemas, and example responses interactively.
 
 ## System Overview
 
