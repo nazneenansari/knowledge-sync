@@ -1,0 +1,138 @@
+{
+  "info": {
+    "_postman_id": "3684a1f7-f38e-4477-9b74-c2d79d56d961",
+    "name": "knowledge-sync-collection",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "_exporter_id": "42241321"
+  },
+  "item": [
+    {
+      "name": "get-dlq-items",
+      "protocolProfileBehavior": {
+        "disableBodyPruning": true
+      },
+      "request": {
+        "method": "GET",
+        "header": [],
+        "body": {
+          "mode": "raw",
+          "raw": "",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "https://rutm5dacpj.execute-api.us-east-1.amazonaws.com/dev/admin/dlq",
+          "protocol": "https",
+          "host": [
+            "rutm5dacpj",
+            "execute-api",
+            "us-east-1",
+            "amazonaws",
+            "com"
+          ],
+          "path": [
+            "dev",
+            "admin",
+            "dlq"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "replay-dlq",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "x-signature",
+            "value": "4b2be2a5bc84aa32978f8297f3f6a0ccc4bccd272f7e728174405fd6324fe721",
+            "type": "text",
+            "disabled": true
+          },
+          {
+            "key": "x-timestamp",
+            "value": "1778135863",
+            "type": "text",
+            "disabled": true
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{  \"webhookId\": \"wh_01HZK8M3N2PQRS\",  \"event\": \"article.published\",  \"tenantId\": \"acme-corp\",  \"appId\": \"egain\",  \"timestamp\": \"2024-06-01T12:00:00Z\",  \"data\": {    \"articleId\": \"ARTICLE-1001\",    \"title\": \"How to reset your password\",    \"urlName\": \"how-to-reset-password\",    \"content\": \"<p>Step 1: Click <b>Forgot Password</b>...</p>\",    \"language\": \"en-US\",    \"version\": \"2.0\",    \"categories\": [      \"Account Management\",      \"Security\"    ]  }}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "https://rutm5dacpj.execute-api.us-east-1.amazonaws.com/dev/admin/dlq/cb91f867-f66c-4c02-b5b1-1f2b56930fd5/replay",
+          "protocol": "https",
+          "host": [
+            "rutm5dacpj",
+            "execute-api",
+            "us-east-1",
+            "amazonaws",
+            "com"
+          ],
+          "path": [
+            "dev",
+            "admin",
+            "dlq",
+            "cb91f867-f66c-4c02-b5b1-1f2b56930fd5",
+            "replay"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "article-published",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "x-signature",
+            "value": "91b13900a0c6071eb2d4260b46c43e84ef0d2f7c06025e88503a186e5a350b0f",
+            "type": "text"
+          },
+          {
+            "key": "x-timestamp",
+            "value": "1778128316",
+            "type": "text"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{  \"webhookId\": \"wh_01HZK8M3N2PQRS\",  \"event\": \"article.published\",  \"tenantId\": \"acme-corp\",  \"appId\": \"egain\",  \"timestamp\": \"2024-06-01T12:00:00Z\",  \"data\": {    \"articleId\": \"ARTICLE-1001\",    \"title\": \"How to reset your password\",    \"urlName\": \"how-to-reset-password\",    \"content\": \"<p>Step 1: Click <b>Forgot Password</b>...</p>\",    \"language\": \"en-US\",    \"version\": \"2.0\",    \"categories\": [      \"Account Management\",      \"Security\"    ]  }}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "https://rutm5dacpj.execute-api.us-east-1.amazonaws.com/dev/webhooks/case-closed",
+          "protocol": "https",
+          "host": [
+            "rutm5dacpj",
+            "execute-api",
+            "us-east-1",
+            "amazonaws",
+            "com"
+          ],
+          "path": [
+            "dev",
+            "webhooks",
+            "case-closed"
+          ]
+        }
+      },
+      "response": []
+    }
+  ]
+}
